@@ -1,0 +1,186 @@
+{%- comment -%}
+  ============================================================================
+  archer-merchant-listing.liquid
+  Archer Works — merchant-listing structured data for Shopify product pages
+  ============================================================================
+
+  WHAT THIS FIXES
+  Google turns an active price into a SALE price only when a second price,
+  marked priceType = https://schema.org/StrikethroughPrice, is also supplied.
+  (Google merchant-listing reference, 2026-09-08 revision, read 2026-09-25.)
+  Most Shopify themes emit only the active price, so a discount the merchant's
+  own catalog records is invisible to Google.
+
+  This snippet emits ONE Product node for the currently selected variant with:
+    * price + priceCurrency                       (Google: required)
+    * availability, itemCondition, url, sku, gtin (recommended)
+    * a StrikethroughPrice UnitPriceSpecification — ONLY when the variant is
+      genuinely discounted (compare_at_price > price)
+    * a sale window (validFrom / priceValidUntil), subject to the guards below
+
+  WHAT IT DELIBERATELY DOES NOT DO
+    * It never invents a sale. No compare_at_price above price => no
+      strikethrough spec and no sale window. The page stays truthful.
+    * It never emits a priceValidUntil in the past. Google: "Your listing may
+      not display if the priceValidUntil property indicates a past date."
+    * It never emits validFrom after the end date (Google best practice:
+      start <= end); an inconsistent metafield is discarded, not emitted.
+    * It marks exactly ONE price with priceType, and never combines priceType
+      with validForMemberTier — Google ignores a spec carrying both.
+    * It emits nothing at all when the active price is not greater than zero.
+      Merchant listings require a price > 0, so a $0.00 product would produce
+      an invalid listing; silence is the honest output. (This is the same
+      defect class the Archer Works checker reports separately.)
+    * Dates are emitted as plain ISO-8601 calendar dates. Google accepts Date
+      for both properties; a date carries no timezone to get wrong.
+    * It covers the selected variant only. Multi-variant ProductGroup markup is
+      out of scope.
+
+  INSTALL (3 steps)
+    1. Save as snippets/archer-merchant-listing.liquid
+    2. In sections/main-product.liquid find the theme's own JSON-LD block, e.g.
+         <script type="application/ld+json">{{ product | structured_data }}</script>
+       and comment it out. Two competing Product nodes on one page is worse
+       than one; Google picks, and it may not pick yours.
+    3. In the same place add:
+         {% render 'archer-merchant-listing', product: product %}
+
+  OPTIONAL SALE WINDOW (metafields, both optional)
+    custom.sale_start  date / date_time  -> validFrom
+    custom.sale_end    date / date_time  -> priceValidUntil
+  With no metafields set, priceValidUntil rolls forward 30 days from render —
+  which is what the property means: the date after which this price is no
+  longer committed. validFrom is omitted when unknown rather than guessed.
+{%- endcomment -%}
+
+{%- liquid
+  assign _v = product.selected_or_first_available_variant
+  assign _active = 0
+  if _v != blank
+    assign _active = _v.price | divided_by: 100.0
+  endif
+-%}
+{%- if _v != blank and _active > 0 -%}
+  {%- liquid
+    assign _window_days = 30
+    assign _cur = shop.currency
+    if cart.currency.iso_code != blank
+      assign _cur = cart.currency.iso_code
+    endif
+
+    # A sale exists only if the merchant's own catalog says so.
+    assign _on_sale = false
+    assign _strike = 0
+    if _v.compare_at_price != blank and _v.compare_at_price > _v.price
+      assign _on_sale = true
+      assign _strike = _v.compare_at_price | divided_by: 100.0
+    endif
+
+    assign _now_epoch = 'now' | date: '%s' | times: 1
+
+    # End of window. A metafield wins only if it is a real FUTURE date; a past
+    # date is discarded rather than emitted.
+    #
+    # Metafield shape: a date/date_time metafield exposes `.value`; an older
+    # single_line_text_field metafield is the string itself. Read both.
+    assign _mf_end = product.metafields.custom.sale_end.value
+    if _mf_end == blank
+      assign _mf_end = product.metafields.custom.sale_end
+    endif
+    assign _mf_start = product.metafields.custom.sale_start.value
+    if _mf_start == blank
+      assign _mf_start = product.metafields.custom.sale_start
+    endif
+
+    # TIMEZONE GUARD. A Shopify `date` metafield is stored at UTC midnight, and
+    # the `date` filter formats in the SHOP's timezone -- so a store west of
+    # Greenwich renders 2026-10-05 as 2026-10-04 and the sale ends a day early
+    # in Google's eyes. That is the same off-by-one defect class this snippet
+    # exists to fix, so it is handled explicitly:
+    #   - date-only value (no 'T'): shift the instant to midday before
+    #     formatting. That preserves the merchant's intended calendar day from
+    #     UTC-11 through UTC+11, and emits a plain Date.
+    #   - value with an explicit time: the merchant named an instant, so emit it
+    #     faithfully as a full DateTime with an explicit UTC offset. There is no
+    #     calendar day to get wrong.
+    # Comparisons below run on epoch seconds and are timezone-independent.
+    assign _end_iso = ''
+    assign _end_epoch = 0
+    if _mf_end != blank
+      assign _cand_epoch = _mf_end | date: '%s' | times: 1
+      if _cand_epoch > _now_epoch
+        assign _end_epoch = _cand_epoch
+        if _mf_end contains 'T'
+          assign _tz = _cand_epoch | date: '%z'
+          assign _tzh = _tz | slice: 0, 3
+          assign _tzm = _tz | slice: 3, 2
+          assign _end_iso = _cand_epoch | date: '%Y-%m-%dT%H:%M:%S'
+          assign _end_iso = _end_iso | append: _tzh | append: ':' | append: _tzm
+        else
+          assign _end_noon = _cand_epoch | plus: 43200
+          assign _end_iso = _end_noon | date: '%Y-%m-%d'
+        endif
+      endif
+    endif
+    if _end_iso == ''
+      assign _roll = _window_days | times: 86400
+      assign _end_epoch = _now_epoch | plus: _roll
+      assign _end_iso = _end_epoch | date: '%Y-%m-%d'
+    endif
+
+    # Start of window. Emitted only when known AND not after the end.
+    assign _start_iso = ''
+    if _mf_start != blank
+      assign _start_epoch = _mf_start | date: '%s' | times: 1
+      if _start_epoch <= _end_epoch
+        if _mf_start contains 'T'
+          assign _stz = _start_epoch | date: '%z'
+          assign _stzh = _stz | slice: 0, 3
+          assign _stzm = _stz | slice: 3, 2
+          assign _start_iso = _start_epoch | date: '%Y-%m-%dT%H:%M:%S'
+          assign _start_iso = _start_iso | append: _stzh | append: ':' | append: _stzm
+        else
+          assign _start_noon = _start_epoch | plus: 43200
+          assign _start_iso = _start_noon | date: '%Y-%m-%d'
+        endif
+      endif
+    endif
+
+    assign _avail = 'https://schema.org/OutOfStock'
+    if _v.available
+      assign _avail = 'https://schema.org/InStock'
+    endif
+  -%}
+<script type="application/ld+json" data-archer-merchant-listing="1">
+{
+  "@context": "https://schema.org/",
+  "@type": "Product",
+  "name": {{ product.title | strip_html | json }},
+  "url": {{ product.url | prepend: request.origin | json }}{% if product.featured_image != blank %},
+  "image": [{{ product.featured_image | image_url: width: 1200 | prepend: 'https:' | json }}]{% endif %}{% if product.description != blank %},
+  "description": {{ product.description | strip_html | truncate: 4900 | json }}{% endif %}{% if _v.sku != blank %},
+  "sku": {{ _v.sku | json }}{% endif %}{% if _v.barcode != blank %},
+  "gtin": {{ _v.barcode | json }}{% endif %}{% if product.vendor != blank %},
+  "brand": {
+    "@type": "Brand",
+    "name": {{ product.vendor | json }}
+  }{% endif %},
+  "offers": {
+    "@type": "Offer",
+    "url": {{ _v.url | prepend: request.origin | json }},
+    "price": {{ _active }},
+    "priceCurrency": {{ _cur | json }},
+    "availability": {{ _avail | json }},
+    "itemCondition": "https://schema.org/NewCondition"{% if _on_sale %},
+    "priceValidUntil": {{ _end_iso | json }}{% if _start_iso != '' %},
+    "validFrom": {{ _start_iso | json }}{% endif %},
+    "priceSpecification": {
+      "@type": "UnitPriceSpecification",
+      "priceType": "https://schema.org/StrikethroughPrice",
+      "price": {{ _strike }},
+      "priceCurrency": {{ _cur | json }}
+    }{% endif %}
+  }
+}
+</script>
+{%- endif -%}
