@@ -162,9 +162,23 @@ The code is yours to keep, use and modify under the **MIT** licence, with no
 conditions and nothing expected back. It works whether or not you ever get in
 touch.
 
-If you read all of that and would rather not touch your theme code at all, the
-same explanation with a plain contact address is at
+### If you would rather not touch your theme code
+
+We will install this snippet into a duplicate of your theme for a flat
+**$150, one-time** — you see and approve the exact change before anything is
+published, and there is no subscription. That is the whole offer: the same file
+above, put in place for you, on the template rather than one product.
+
+The free check and the price are both here:
+<https://archer-price-check.vercel.app/> — paste a product URL to see what your
+page currently sends Google, with the fix priced on the same screen. The longer
+written explanation is at
 <https://archer-price-check.vercel.app/fix.html>.
+
+Honest limits, the same ones as above: we cannot tell you what Google has
+already decided about your items, only Merchant Center can, and we do not
+promise a ranking, a sale annotation or any other outcome Google controls. We
+charge for the template edit, not for a result.
 
 ## Contributing
 
